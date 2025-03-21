@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Search with Typesense</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Font: Roboto -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+        }
+        .product-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .product-card:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .suggestions {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            width: 100%;
+            z-index: 1000;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .suggestion-item {
+            padding: 10px;
+            cursor: pointer;
+        }
+        .suggestion-item:hover {
+            background: #f0f0f0;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <!-- Header -->
+    <header class="bg-blue-600 text-white p-4">
+        <h1 class="text-2xl font-bold">My E-commerce Site</h1>
+    </header>
+
+    <div class="container mx-auto p-6 max-w-4xl mt-6">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">Product Search</h1>
+
+        <!-- Populate Section -->
+        <div class="mb-8">
+            <button id="populate-btn" class="bg-gray-600 text-white px-6 py-2 rounded-lg hover:bg-gray-700 transition">
+                Populate Products
+            </button>
+            <div id="populate-message" class="mt-2 text-sm text-center"></div>
+        </div>
+
+        <!-- Search Form -->
+        <form id="search-form" class="mb-8 relative">
+            <input 
+                type="text" 
+                id="search-query" 
+                placeholder="Search products (e.g., electronics)" 
+                class="w-full p-4 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+            >
+            <div id="suggestions" class="suggestions hidden"></div>
+            <button 
+                type="submit" 
+                class="absolute right-0 top-0 bg-blue-600 text-white px-6 py-3 rounded-r-lg hover:bg-blue-700 transition flex items-center"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                Search
+            </button>
+        </form>
+
+        <!-- Search Results -->
+        <ul id="product-list" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6"></ul>
+
+        <!-- Pagination -->
+        <div id="pagination" class="mt-6 flex justify-center gap-4">
+            <button 
+                id="prev-btn" 
+                class="bg-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-400 transition" 
+                disabled
+            >
+                Previous
+            </button>
+            <button 
+                id="next-btn" 
+                class="bg-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-400 transition" 
+                disabled
+            >
+                Next
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let currentPage = 1;
+        const perPage = 10; // Adjust if your API uses a different default
+        let suggestionTimeout;
+
+        // Populate Products
+        document.getElementById('populate-btn').addEventListener('click', function() {
+            const messageDiv = document.getElementById('populate-message');
+            messageDiv.innerHTML = '<span class="spinner"></span> Populating products...';
+
+            fetch('/populate/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    // Add CSRF token if required by Django
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    messageDiv.innerHTML = '<span class="text-green-600">Products populated successfully!</span>';
+                } else {
+                    messageDiv.innerHTML = `<span class="text-red-600">Error: ${data.error}</span>`;
+                }
+            })
+            .catch(error => {
+                messageDiv.innerHTML = `<span class="text-red-600">Error: ${error.message}</span>`;
+            });
+        });
+
+        // Search Products
+        document.getElementById('search-form').addEventListener('submit', function(event) {
+            event.preventDefault();
+            currentPage = 1; // Reset to first page on new search
+            document.getElementById('suggestions').classList.add('hidden'); // Hide suggestions on submit
+            searchProducts();
+        });
+
+        // Pagination Buttons
+        document.getElementById('prev-btn').addEventListener('click', () => {
+            if (currentPage > 1) {
+                currentPage--;
+                searchProducts();
+            }
+        });
+
+        document.getElementById('next-btn').addEventListener('click', () => {
+            currentPage++;
+            searchProducts();
+        });
+
+        // Search Function
+        function searchProducts() {
+            const query = document.getElementById('search-query').value;
+            const productList = document.getElementById('product-list');
+            const prevBtn = document.getElementById('prev-btn');
+            const nextBtn = document.getElementById('next-btn');
+            
+            productList.innerHTML = '<li class="col-span-full text-center"><span class="spinner"></span> Searching...</li>';
+
+            fetch(`products/?q=${encodeURIComponent(query)}&page=${currentPage}&per_page=${perPage}`)
+                .then(response => response.json())
+                .then(data => {
+                    productList.innerHTML = '';
+                    if (data.error) {
+                        productList.innerHTML = `<li class="col-span-full text-red-600 text-center">${data.error}</li>`;
+                        return;
+                    }
+                    if (data.length === 0) {
+                        productList.innerHTML = '<li class="col-span-full text-gray-500 text-center">No products found.</li>';
+                    } else {
+                        data.forEach(product => {
+                            const li = document.createElement('li');
+                            li.className = 'product-card bg-white rounded-lg shadow-md';
+                            li.innerHTML = `
+                                <img src="${product.image}" alt="${product.title}" class="w-full h-48 object-cover rounded-t-lg">
+                                <div class="p-4">
+                                    <h3 class="text-lg font-semibold text-gray-800">${product.title}</h3>
+                                    <p class="text-gray-600">Price: $${product.price}</p>
+                                    <p class="text-gray-600">Category: ${product.category}</p>
+                                    <p class="text-gray-500 text-sm mt-2">${product.description.substring(0, 100)}...</p>
+                                    <button class="mt-4 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">View Details</button>
+                                </div>
+                            `;
+                            productList.appendChild(li);
+                        });
+
+                        // Update pagination (assuming 150 total products for now)
+                        const totalProducts = 150; // Adjust based on actual total if available
+                        prevBtn.disabled = currentPage <= 1;
+                        nextBtn.disabled = currentPage * perPage >= totalProducts;
+                    }
+                })
+                .catch(error => {
+                    productList.innerHTML = `<li class="col-span-full text-red-600 text-center">Error: ${error.message}</li>`;
+                });
+        }
+
+        // Suggestions
+        const searchInput = document.getElementById('search-query');
+        const suggestionsDiv = document.getElementById('suggestions');
+
+        searchInput.addEventListener('input', function() {
+            clearTimeout(suggestionTimeout);
+            suggestionTimeout = setTimeout(() => {
+                const query = searchInput.value;
+                if (query.length > 0) {
+                    fetch(`search_suggestions/?q=${encodeURIComponent(query)}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            suggestionsDiv.innerHTML = '';
+                            if (data.length > 0) {
+                                data.forEach(suggestion => {
+                                    const div = document.createElement('div');
+                                    div.className = 'suggestion-item';
+                                    div.textContent = suggestion;
+                                    div.addEventListener('click', () => {
+                                        searchInput.value = suggestion;
+                                        suggestionsDiv.classList.add('hidden');
+                                        searchProducts();
+                                    });
+                                    suggestionsDiv.appendChild(div);
+                                });
+                                suggestionsDiv.classList.remove('hidden');
+                            } else {
+                                suggestionsDiv.classList.add('hidden');
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching suggestions:', error);
+                        });
+                } else {
+                    suggestionsDiv.classList.add('hidden');
+                }
+            }, 300); // Debounce to avoid too many requests
+        });
+
+        // Hide suggestions when clicking outside
+        document.addEventListener('click', function(event) {
+            if (!document.getElementById('search-form').contains(event.target)) {
+                suggestionsDiv.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
